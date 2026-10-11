@@ -70,7 +70,10 @@ export interface PaymentProvider {
 // storage/PaymentProviderClient/StripePaymentProviderClient.ts — one specific implementation
 export class StripePaymentProviderClient implements PaymentProvider {
   async charge(amount: number, cardToken: string) {
-    const result = await stripeSdk.charges.create({ amount, source: cardToken });
+    const result = await stripeSdk.charges.create({
+      amount,
+      source: cardToken,
+    });
     return { id: result.id, status: result.status };
   }
 }
@@ -98,12 +101,13 @@ The raw SDK client underneath a Repository or Client is plumbing, not a boundary
   }
   ```
 
-- **Factories pass the shared instances in.** `createAwsStorage` is the only place that imports the client instances. It builds `new DynamoUsersRepository(tables.users, dynamodbDocumentClient)` and `new AwsJobQueueClient(config.jobQueue, clock, schedulerClient, sqsClient)`, taking the plain values from config loaded out of env. See *Factories and composition roots* below.
+- **Factories pass the shared instances in.** `createAwsStorage` is the only place that imports the client instances. It builds `new DynamoUsersRepository(tables.users, dynamodbDocumentClient)` and `new AwsJobQueueClient(config.jobQueue, clock, schedulerClient, sqsClient)`, taking the plain values from config loaded out of env. See _Factories and composition roots_ below.
 - **Tests pass their own instances** (`new SchedulerClient({})`) and mock them with `aws-sdk-client-mock`, so each test controls exactly the client under test.
 
 #### The same pattern for job queues
 
 A job queue (SQS, Scheduler, RabbitMQ, BullMQ…) is a Client too, with a transport on the consuming side:
+
 - The domain owns the job envelope and a `JobQueue` interface. Services only ever `add(job, { runAt?, key? })`.
 - `storage/JobQueueClient/` holds the provider Client and an in-memory Client.
 - `transport/jobs.ts` dispatches each job body to its handler.
@@ -138,7 +142,7 @@ export class UserModel {
 
 ### 3. Service Layer
 
-**Role:** the central hub for a use case. A Service is constructor-injected with whichever repositories and Models it needs, and it's the *only* place that orchestrates them to get work done. Centralizing here means there's exactly one place to look for "how does sign-up actually work," not one implementation per transport.
+**Role:** the central hub for a use case. A Service is constructor-injected with whichever repositories and Models it needs, and it's the _only_ place that orchestrates them to get work done. Centralizing here means there's exactly one place to look for "how does sign-up actually work," not one implementation per transport.
 
 - A Service can use more than one repository and more than one Model — cross-entity orchestration (a purchase request that touches both Listings and Purchase Requests) belongs here, not duplicated across routers/controllers.
 - **The Service owns all conversion, transformation, and mapping of the response.** Whatever shape a Service method returns is exactly what gets handed to the Transport Layer — no reshaping happens after the Service returns.
@@ -151,7 +155,11 @@ export class UsersService {
   constructor(private readonly repository: UsersRepository) {}
 
   async signUp(displayName: string): Promise<User> {
-    const user: User = { id: crypto.randomUUID(), displayName, roles: ["Customer"] };
+    const user: User = {
+      id: crypto.randomUUID(),
+      displayName,
+      roles: ["Customer"],
+    };
     await this.repository.create(user);
     return user;
   }
@@ -173,7 +181,7 @@ export class PaymentGatewayService {
 }
 ```
 
-**Smell test:** if business logic that decides *what* to do (not just *how* to fetch it) lives in a router/controller/resolver instead of a Service, it's in the wrong layer — and it likely means the same decision gets re-implemented the next time a second transport is added.
+**Smell test:** if business logic that decides _what_ to do (not just _how_ to fetch it) lives in a router/controller/resolver instead of a Service, it's in the wrong layer — and it likely means the same decision gets re-implemented the next time a second transport is added.
 
 ### 4. Transport Layer
 
@@ -230,12 +238,12 @@ src/
     └── <name>.ts                          # router.ts / resolver.ts / controller.ts — transport-specific
 ```
 
-- **`storage/`** holds every boundary implementation — Repositories talking to your own data store *and* Clients talking to an external provider — since both play the same role: the only files allowed to import the concrete SDK. Each Repository or Client gets its own subdirectory, named for the contract with the tech name stripped out (`UsersRepository/`, `PaymentProviderClient/`); every tech-specific implementation of that same contract lives inside it. This matters as soon as a contract has more than one implementation — most commonly because a test double (`InMemoryUsersRepository`) lives alongside the real one (`DynamoUsersRepository`), but equally for a genuine multi-provider swap. Without the subdirectory, `storage/` flattens into one undifferentiated pile where `DynamoUsersRepository.ts` and `InMemoryUsersRepository.ts` sit as two unrelated-looking files instead of two implementations of one contract; with it, the top level of `storage/` answers "what Repositories and Clients does this project have" at a glance, and you only step into a subdirectory when you need to know which technologies implement a specific one. Only two kinds of file stay flat at the top of `storage/`, because neither is a boundary implementation. The shared SDK client/connection plumbing (`<tech>ClientInstance.ts`) is internal plumbing that the storage factory passes into several Repositories or Clients. The storage factories (`create<Tech>Storage.ts`) assemble one tech's implementations into a Storage. Swap DynamoDB for Postgres, or Stripe for another processor, and only the relevant subdirectory changes.
+- **`storage/`** holds every boundary implementation — Repositories talking to your own data store _and_ Clients talking to an external provider — since both play the same role: the only files allowed to import the concrete SDK. Each Repository or Client gets its own subdirectory, named for the contract with the tech name stripped out (`UsersRepository/`, `PaymentProviderClient/`); every tech-specific implementation of that same contract lives inside it. This matters as soon as a contract has more than one implementation — most commonly because a test double (`InMemoryUsersRepository`) lives alongside the real one (`DynamoUsersRepository`), but equally for a genuine multi-provider swap. Without the subdirectory, `storage/` flattens into one undifferentiated pile where `DynamoUsersRepository.ts` and `InMemoryUsersRepository.ts` sit as two unrelated-looking files instead of two implementations of one contract; with it, the top level of `storage/` answers "what Repositories and Clients does this project have" at a glance, and you only step into a subdirectory when you need to know which technologies implement a specific one. Only two kinds of file stay flat at the top of `storage/`, because neither is a boundary implementation. The shared SDK client/connection plumbing (`<tech>ClientInstance.ts`) is internal plumbing that the storage factory passes into several Repositories or Clients. The storage factories (`create<Tech>Storage.ts`) assemble one tech's implementations into a Storage. Swap DynamoDB for Postgres, or Stripe for another processor, and only the relevant subdirectory changes.
 - **`domain/<entity-or-capability>/`** holds what should almost never change: the shape of what's being modeled (if anything is persisted), the contract a Repository or Client must fulfill, and the pure business rules in its Model. Nothing here depends on a storage technology, an external provider's SDK, or a transport. A folder here doesn't require all of `types.ts`/`model.ts` — a pure external-provider integration may have nothing but the provider interface.
 - **`services/`** sits above `domain/` and `storage/`, wiring specific repositories and Models together for a use case. It's its own top-level directory rather than nested inside one domain's folder because a Service is often not scoped to a single entity — it can span several (a purchase request Service reaching into both Listings and Purchase Requests repositories), or none at all (a Service with no persistence needs).
 - **`transport/`** holds everything specific to the chosen transport — swap tRPC for GraphQL and only this directory changes.
 
-`<Name>` and `<entity>` in the tree above are placeholders for *whatever that layer's own naming boundary turns out to be* — they don't have to line up with each other. `services/UsersService.ts` naming itself after `domain/users/` is a coincidence of that particular use case matching that particular entity one-to-one, not a convention the directory structure requires. A `services/PaymentGatewayService.ts` with no `domain/payment-gateway/` folder at all is just as valid — build the domain folder, the repository, and the model only when there's an entity that actually needs them.
+`<Name>` and `<entity>` in the tree above are placeholders for _whatever that layer's own naming boundary turns out to be_ — they don't have to line up with each other. `services/UsersService.ts` naming itself after `domain/users/` is a coincidence of that particular use case matching that particular entity one-to-one, not a convention the directory structure requires. A `services/PaymentGatewayService.ts` with no `domain/payment-gateway/` folder at all is just as valid — build the domain folder, the repository, and the model only when there's an entity that actually needs them.
 
 A domain with no persistence yet just omits `repository.ts` and the matching subdirectory under `storage/` — don't create either ahead of the code that needs it. A Repository or Client with only one implementation so far still gets its own subdirectory (`UsersRepository/DynamoUsersRepository.ts`, not `storage/DynamoUsersRepository.ts`) — the subdirectory is about what the contract is, not how many implementations currently exist, so adding the second implementation later (most often a test double) never requires a rename or a move.
 
@@ -252,7 +260,7 @@ const services = createServices(createAwsStorage(config, clock), {
 });
 ```
 
-- **`config.ts` loads env.** It has one loader per section (`loadTablesConfig`, `loadJobQueueConfig`) and `loadConfig`, which combines them. Each is a pure function of an `env` object, and each throws on a missing variable, so a root fails at startup. A tool that needs only one section (`db:setup` needs only the tables) loads only that section.
+- **`config.ts` loads env.** It has one loader per section (`loadTablesConfig`, `loadJobQueueConfig`) and `loadConfig`, which combines them. Each is a pure function of an `env` object, and each throws on a missing variable, so a root fails at startup. A tool that needs only one section loads only that section.
 - **`domain/storage.ts` defines `Storage`**, the bundle of every Repository and Client contract the services need.
 - **`storage/create<Tech>Storage.ts` builds one Storage per tech**: `createAwsStorage(config, clock)` for the real thing, `createInMemoryStorage(clock)` for tests. It's the only place that knows how to construct each implementation, for example an in-memory Repository sharing its siblings. To override one piece, spread it: `{ ...createInMemoryStorage(clock), jobQueue }`.
 - **`services/createServices.ts` wires the graph.** `createServices(storage, options)` is the only place that knows which Service needs which Repositories and Clients. Giving a Service a Repository or Client that Storage already holds changes only this file. A new contract also changes `Storage` and each `create<Tech>Storage`.
@@ -264,8 +272,8 @@ Use plain functions, not a DI container or an Abstract Factory. Each root knows 
 
 When you're not sure where a piece of logic belongs, ask in this order:
 
-1. **Does it decide *how* to reach the data source, or an external provider's API/SDK** (a query, a marshaling detail, a retry)? → Repository Layer (Repository for a data source, Client for a provider — same rule either way).
-2. **Does it describe what the entity *is* or a rule about it in isolation** (is this User allowed to hold this Role)? → Model.
+1. **Does it decide _how_ to reach the data source, or an external provider's API/SDK** (a query, a marshaling detail, a retry)? → Repository Layer (Repository for a data source, Client for a provider — same rule either way).
+2. **Does it describe what the entity _is_ or a rule about it in isolation** (is this User allowed to hold this Role)? → Model.
 3. **Does it orchestrate one or more repositories/Models to get a use case done, or shape the final response**? → Service Layer.
 4. **Is it purely about getting a request in the door and a response out**? → Transport Layer, and only that.
 
